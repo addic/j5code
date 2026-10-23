@@ -2200,3 +2200,37 @@ it.layer(NodeServices.layer)("server settings", (it) => {
     }).pipe(Effect.provide(layerServerSettings())),
   );
 });
+
+it.effect("round-trips failover settings with default-valued nested fields", () =>
+  Effect.gen(function* () {
+    const config = yield* ServerConfig.ServerConfig;
+    const fs = yield* FileSystem.FileSystem;
+    const service = yield* ServerSettingsModule.ServerSettingsService;
+    const enabled = {
+      enabled: true,
+      routes: [],
+      maxHops: 4,
+      subscriptionOnlyInstances: [],
+    };
+    yield* service.updateSettings({ usageLimitFailover: enabled });
+    const persisted = yield* decodeServerSettingsJson(
+      yield* fs.readFileString(config.settingsPath),
+    );
+    assert.deepEqual(persisted.usageLimitFailover, enabled);
+    const disabled = { ...enabled, enabled: false, maxHops: 2 };
+    yield* service.updateSettings({ usageLimitFailover: disabled });
+    assert.deepEqual(
+      (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+        .usageLimitFailover,
+      disabled,
+    );
+    yield* service.updateSettings({
+      usageLimitFailover: DEFAULT_SERVER_SETTINGS.usageLimitFailover,
+    });
+    assert.deepEqual(
+      (yield* decodeServerSettingsJson(yield* fs.readFileString(config.settingsPath)))
+        .usageLimitFailover,
+      DEFAULT_SERVER_SETTINGS.usageLimitFailover,
+    );
+  }).pipe(Effect.provide(layerServerSettings().pipe(Layer.provideMerge(NodeServices.layer)))),
+);

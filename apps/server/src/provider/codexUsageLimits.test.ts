@@ -25,6 +25,7 @@ describe("codexRateLimitsToLimits", () => {
       }),
     ).toEqual({
       checkedAt,
+      completeCheckedAt: checkedAt,
       windows: [
         {
           id: "primary",
@@ -93,9 +94,10 @@ describe("codexRateLimitsToLimits", () => {
     "supports legacy reads with no bucket map: %j",
     (rateLimitsByLimitId) => {
       const snapshot = { primary: { usedPercent: 12, windowDurationMins: 300 } };
-      expect(codexRateLimitsToLimits({ checkedAt, snapshot, rateLimitsByLimitId })).toEqual(
-        codexRateLimitsToLimits({ checkedAt, snapshot }),
-      );
+      expect(codexRateLimitsToLimits({ checkedAt, snapshot, rateLimitsByLimitId })).toEqual({
+        ...codexRateLimitsToLimits({ checkedAt, snapshot }),
+        ...(rateLimitsByLimitId == null ? {} : { recoveryWindows: [] }),
+      });
     },
   );
 
@@ -132,14 +134,17 @@ describe("codexRateLimitsToUpdate", () => {
     expect(codexRateLimitsToUpdate({ planType: "plus" })).toBeUndefined();
   });
 
-  it("ignores Spark notifications so they cannot overwrite the main allowance", () => {
+  it("retains scoped notifications separately from the main allowance", () => {
     expect(
       codexRateLimitsToUpdate({
         limitId: "codex_bengalfox",
         primary: { usedPercent: 0, windowDurationMins: 300 },
         secondary: { usedPercent: 90, windowDurationMins: 10080 },
-      }),
-    ).toBeUndefined();
+      })?.recoveryWindows?.map((w) => [w.id, w.usedPercent]),
+    ).toEqual([
+      ["codex_bengalfox:primary", 0],
+      ["codex_bengalfox:secondary", 90],
+    ]);
     expect(
       codexRateLimitsToUpdate({
         limitId: "codex",
@@ -313,4 +318,26 @@ describe("codexUsageLimitResetAt", () => {
       codexUsageLimitResetAt({ primary: { usedPercent: 50, resetsAt: 2000000000 } }),
     ).toBeNull();
   });
+});
+
+it("exposes purchased credits as a paid-usage gate without redeeming reset credits", () => {
+  expect(
+    codexRateLimitsToLimits({
+      checkedAt,
+      snapshot: { credits: { hasCredits: true, unlimited: false, balance: "5" } },
+    }).paidUsageEnabled,
+  ).toBe(true);
+});
+
+it("retains an exhausted scoped bucket from a full probe and credit-only notifications", () => {
+  const result = codexRateLimitsToLimits({
+    checkedAt,
+    snapshot: { primary: { usedPercent: 0 }, secondary: { usedPercent: 0 } },
+    rateLimitsByLimitId: { codex_bengalfox: { primary: { usedPercent: 100 } } },
+  });
+  expect(result.recoveryWindows?.[0]?.usedPercent).toBe(100);
+  expect(
+    codexRateLimitsToUpdate({ credits: { hasCredits: true, unlimited: false, balance: "1" } })
+      ?.paidUsageEnabled,
+  ).toBe(true);
 });
