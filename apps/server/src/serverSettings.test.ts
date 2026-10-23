@@ -2232,5 +2232,5 @@ it.effect("round-trips failover settings with default-valued nested fields", () 
         .usageLimitFailover,
       DEFAULT_SERVER_SETTINGS.usageLimitFailover,
     );
-  }).pipe(Effect.provide(layerServerSettings()), Effect.provide(NodeServices.layer)),
+  }).pipe(Effect.provide(layerServerSettings().pipe(Layer.provideMerge(NodeServices.layer)))),
 );
