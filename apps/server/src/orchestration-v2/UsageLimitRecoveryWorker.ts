@@ -1,3 +1,4 @@
+import { latestExecutedRun } from "@t3tools/shared/orchestrationV2ThreadError";
 import * as Option from "effect/Option";
 import * as Ref from "effect/Ref";
 import * as ProviderRegistry from "../provider/ProviderRegistry.ts";
@@ -78,7 +79,7 @@ export const makeSweep = Effect.gen(function* () {
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const threads = yield* ThreadManagement.ThreadManagementService;
   const settings = yield* ServerSettings.ServerSettingsService;
-  const planFailover = yield* makeFailoverPlanner;
+  const failover = yield* makeFailoverPlanner;
   const registry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
   const probes = yield* Ref.make<ReadonlyMap<string, number>>(new Map());
   return Effect.fn("UsageLimitRecoveryWorker.sweep")(function* () {
@@ -111,10 +112,17 @@ export const makeSweep = Effect.gen(function* () {
     }
     for (const thread of candidates) {
       if (preferences.usageLimitFailover.enabled) {
-        yield* Effect.gen(function* () {
+        const managed = yield* Effect.gen(function* () {
           const projection = yield* projections.getThreadProjection(thread.id);
-          const planned = yield* planFailover(projection, preferences.usageLimitFailover, nowMs);
-          if (planned === null) return;
+          const source = latestExecutedRun(projection.runs);
+          if (source === null || !(yield* failover.manages(source.providerInstanceId)))
+            return false;
+          const planned = yield* failover.plan(
+            projection,
+            preferences.usageLimitFailover,
+            DateTime.toEpochMillis(yield* DateTime.now),
+          );
+          if (planned === null) return true;
           if (projection.thread.providerInstanceId === planned.run.providerInstanceId) {
             const arm = limitRecoveryCommand(
               thread,
@@ -134,6 +142,7 @@ export const makeSweep = Effect.gen(function* () {
             failedRunId: planned.run.id,
             phase,
           });
+          return true;
         }).pipe(
           Effect.catchCause((cause) =>
             Effect.gen(function* () {
@@ -153,10 +162,11 @@ export const makeSweep = Effect.gen(function* () {
                     phase: "notice",
                   })
                   .pipe(Effect.ignore);
+              return true;
             }),
           ),
         );
-        continue;
+        if (managed) continue;
       }
       const command = limitRecoveryCommand(
         thread,

@@ -839,7 +839,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
   const providerSessions = yield* ProviderSessionManagerV2;
   const providerSwitchService = yield* ProviderSwitchServiceV2;
   const serverSettings = yield* ServerSettings.ServerSettingsService;
-  const planFailover = yield* makeFailoverPlanner;
+  const failover = yield* makeFailoverPlanner;
   const runtimePolicy = yield* RuntimePolicyV2;
   const threadForkService = yield* ThreadForkServiceV2;
   const threadDispatch = yield* ThreadCommandExecutor.ThreadCommandExecutor;
@@ -4558,8 +4558,8 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         const recovery = projection.thread.limitRecovery;
         const now = yield* DateTime.now;
         if (
-          (yield* serverSettings.getSettings.pipe(mapDispatchError(command))).usageLimitFailover
-            .enabled ||
+          (run !== null &&
+            (yield* failover.manages(run.providerInstanceId).pipe(mapDispatchError(command)))) ||
           run?.id !== command.usageLimitContinuationOfRunId ||
           failure?.class !== "usage_limit" ||
           threadShellFromProjection(projection).lastErrorClass !== "usage_limit" ||
@@ -10080,7 +10080,7 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
         turnItems: childResult.turnItems,
       };
       if (
-        (yield* serverSettings.getSettings.pipe(Effect.orDie)).usageLimitFailover.enabled &&
+        (yield* failover.manages(childRun.providerInstanceId).pipe(Effect.orDie)) &&
         childControls.thread.archivedAt === null &&
         childControls.thread.deletedAt === null &&
         latestRootProviderFailure(childRun, childResult.turnItems)?.class === "usage_limit"
@@ -10801,11 +10801,13 @@ const makeOrchestrator = Effect.fn("orchestrationV2.Orchestrator.layer")(functio
           .getThreadProjection(command.threadId)
           .pipe(mapDispatchError(command));
         const now = yield* DateTime.now;
-        const planned = yield* planFailover(
-          projection,
-          (yield* serverSettings.getSettings.pipe(mapDispatchError(command))).usageLimitFailover,
-          DateTime.toEpochMillis(now),
-        ).pipe(mapDispatchError(command));
+        const planned = yield* failover
+          .plan(
+            projection,
+            (yield* serverSettings.getSettings.pipe(mapDispatchError(command))).usageLimitFailover,
+            DateTime.toEpochMillis(now),
+          )
+          .pipe(mapDispatchError(command));
         if (planned === null && latestExecutedRun(projection.runs)?.id === command.failedRunId) {
           return yield* new OrchestratorDispatchError({
             commandId: command.commandId,

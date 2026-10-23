@@ -28,6 +28,18 @@ export interface LimitFailure {
 
 const freshnessMs = 60_000;
 
+export function failoverManagesProvider(
+  provider: Pick<ServerProvider, "instanceId" | "driver"> | undefined,
+  settings: ServerSettings["usageLimitFailover"],
+): boolean {
+  return (
+    settings.enabled &&
+    provider !== undefined &&
+    ["codex", "claudeAgent"].includes(provider.driver) &&
+    settings.subscriptionOnlyInstances.includes(provider.instanceId)
+  );
+}
+
 export function routeAvailability(
   provider: ServerProvider,
   failures: ReadonlyArray<LimitFailure>,
@@ -121,7 +133,8 @@ export function limitFailoverDecision(input: {
               : "read-only",
             provider.driver,
           ).runtimeMode);
-    if (!provider.supportedRuntimeModes?.includes(mode)) return false;
+    const modes = provider.supportedRuntimeModes;
+    if (modes !== undefined && modes.length > 0 && !modes.includes(mode)) return false;
     if (
       targetAssignment &&
       (targetAssignment.resolvedDriver !== provider.driver ||

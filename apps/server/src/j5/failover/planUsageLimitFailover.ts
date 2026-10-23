@@ -2,6 +2,7 @@ import {
   resolveProjectProviderInstanceEnabled,
   type OrchestrationV2ThreadProjection,
   type ServerSettings,
+  type ProviderInstanceId,
 } from "@t3tools/contracts";
 import * as Effect from "effect/Effect";
 import * as Option from "effect/Option";
@@ -13,14 +14,24 @@ import {
   latestRootProviderFailure,
 } from "@t3tools/shared/orchestrationV2ThreadError";
 import { makeAgentPersonaLibrary } from "../agents/agentPersonaLibrary.ts";
-import { limitFailoverDecision } from "./usageLimitFailover.ts";
+import { failoverManagesProvider, limitFailoverDecision } from "./usageLimitFailover.ts";
 
 export const makeFailoverPlanner = Effect.gen(function* () {
   const registry = yield* Effect.serviceOption(ProviderRegistry.ProviderRegistry);
   const projections = yield* ProjectionStore.ProjectionStoreV2;
   const library = yield* makeAgentPersonaLibrary;
   const preferences = yield* ServerPreferences.ServerSettingsService;
-  return Effect.fn("j5.planUsageLimitFailover")(function* (
+  const manages = Effect.fn("j5.managesUsageLimitFailover")(function* (
+    instanceId: ProviderInstanceId,
+  ) {
+    if (Option.isNone(registry)) return false;
+    const configuration = (yield* preferences.getSettings).usageLimitFailover;
+    return failoverManagesProvider(
+      (yield* registry.value.getProviders).find((p) => p.instanceId === instanceId),
+      configuration,
+    );
+  });
+  const plan = Effect.fn("j5.planUsageLimitFailover")(function* (
     projection: OrchestrationV2ThreadProjection,
     settings: ServerSettings["usageLimitFailover"],
     now: number,
@@ -42,6 +53,7 @@ export const makeFailoverPlanner = Effect.gen(function* () {
       )
     )
       return null;
+    if (!(yield* manages(run.providerInstanceId))) return null;
     const definition =
       thread.agentPersonaAssignment === undefined
         ? undefined
@@ -62,4 +74,5 @@ export const makeFailoverPlanner = Effect.gen(function* () {
     });
     return { run, decision };
   });
+  return { plan, manages };
 });

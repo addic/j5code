@@ -1,3 +1,4 @@
+import * as TestClock from "effect/testing/TestClock";
 import { makeSweep } from "../UsageLimitRecoveryWorker.ts";
 import * as ThreadManagement from "../ThreadManagementService.ts";
 import * as ServerPreferences from "../../serverSettings.ts";
@@ -3631,7 +3632,6 @@ it.effect.each(["ordinary", "builder", "critic"] as const)(
           availability: "available",
           auth: { status: "authenticated" },
           checkedAt: stamp,
-          supportedRuntimeModes: ["full-access", "approval-required", "auto-accept-edits"],
           slashCommands: [],
           skills: [],
           models: [
@@ -3930,9 +3930,9 @@ it.effect.each(["ordinary", "builder", "critic"] as const)(
     ).pipe(Effect.provide(NodeServices.layer)),
 );
 
-it.effect(
-  "keeps an exhausted delegated task pending and publishes the recovered child result to its parent",
-  () =>
+it.effect.each([true, false])(
+  "preserves limited delegated-task behavior with failover management %s",
+  (managed) =>
     Effect.scoped(
       Effect.gen(function* () {
         const cwd = yield* checkpointWorkspace("delegated-quota");
@@ -3951,7 +3951,6 @@ it.effect(
           availability: "available",
           auth: { status: "authenticated" },
           checkedAt: stamp,
-          supportedRuntimeModes: ["full-access"],
           models: [
             { slug: selection.model, name: selection.model, isCustom: false, capabilities: {} },
           ],
@@ -3980,7 +3979,7 @@ it.effect(
           enabled: true,
           maxHops: 4,
           routes: [CODEX_MODEL_SELECTION, CLAUDE_MODEL_SELECTION],
-          subscriptionOnlyInstances: providers.map((p) => p.instanceId),
+          subscriptionOnlyInstances: managed ? providers.map((p) => p.instanceId) : [],
         };
         const adapters = ProviderAdapterRegistry.layerFromAdapters([
           makeTestAdapter({
@@ -4080,6 +4079,56 @@ it.effect(
             (yield* orchestrator.getThreadProjection(childId)).runs[0]!.id,
           );
           const pending = yield* orchestrator.getThreadProjection(threadId);
+          if (!managed) {
+            assert.equal(pending.subagents[0]!.status, "failed");
+            assert.include(pending.subagents[0]!.result!, "Simulated provider failure");
+            const child = yield* orchestrator.getThreadProjection(childId);
+            const error = child.turnItems.find((item) => item.type === "error");
+            assert.isDefined(error);
+            if (error?.type !== "error") return;
+            const reset = DateTime.formatIso(DateTime.add(now, { minutes: 1 }));
+            yield* sink.write({
+              events: [
+                {
+                  id: EventId.make("dq:reset"),
+                  type: "turn-item.updated",
+                  threadId: childId,
+                  occurredAt: now,
+                  payload: { ...error, failure: { ...error.failure, resetAt: reset } },
+                },
+              ],
+            });
+            const projections = yield* ProjectionStore.ProjectionStoreV2;
+            const sweep = yield* makeSweep.pipe(
+              Effect.provide(
+                Layer.mergeAll(
+                  Layer.succeed(ProjectionStore.ProjectionStoreV2, projections),
+                  Layer.mock(ThreadManagement.ThreadManagementService)({
+                    dispatch: orchestrator.dispatch,
+                  }),
+                  ServerPreferences.layerTest({
+                    usageLimitFailover: settings,
+                    autoResumeLimitedThreads: true,
+                  }),
+                  Layer.mock(ProviderCatalog.ProviderRegistry)({
+                    getProviders: Effect.succeed(providers),
+                  }),
+                ),
+              ),
+            );
+            yield* sweep();
+            assert.isTrue(
+              (yield* orchestrator.getThreadProjection(childId)).thread.limitRecovery?.autoResume,
+            );
+            yield* TestClock.adjust("61 seconds");
+            yield* sweep();
+            yield* wait(childId, 2, "completed");
+            assert.equal(
+              (yield* orchestrator.getThreadProjection(childId)).runs[1]!.providerInstanceId,
+              CODEX_MODEL_SELECTION.instanceId,
+            );
+            return;
+          }
           assert.isNull(pending.subagents[0]!.result);
           const child = yield* orchestrator.getThreadProjection(childId);
           for (const phase of ["switch", "continue"] as const)

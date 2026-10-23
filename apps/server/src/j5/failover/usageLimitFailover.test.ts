@@ -1,5 +1,3 @@
-const decodePublicCommand = Schema.decodeUnknownSync(OrchestrationV2PublicCommand);
-
 import * as DateTime from "effect/DateTime";
 import { assert, describe, it } from "@effect/vitest";
 import {
@@ -16,10 +14,13 @@ import {
 import * as Schema from "effect/Schema";
 import { getBuiltInAgentPersona } from "../agents/agentPersonas.ts";
 import {
+  failoverManagesProvider,
   limitFailoverDecision,
   routeAvailability,
   type LimitFailure,
 } from "./usageLimitFailover.ts";
+
+const decodePublicCommand = Schema.decodeUnknownSync(OrchestrationV2PublicCommand);
 
 const now = Date.parse("2026-10-23T14:34:18Z");
 const a = ProviderInstanceId.make("codex"),
@@ -49,7 +50,6 @@ function provider(instanceId = a, used = 0, reset = now + 60_000): ServerProvide
     slashCommands: [],
     skills: [],
     models: [{ slug: "test", name: "test", isCustom: false, capabilities: {} }],
-    supportedRuntimeModes: ["full-access", "approval-required", "auto-accept-edits"],
     usageLimits: {
       checkedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
       completeCheckedAt: DateTime.formatIso(DateTime.makeUnsafe(now)),
@@ -98,6 +98,21 @@ const decide = (
   });
 
 describe("usage-limit failover", () => {
+  it("manages only enabled, attested Codex and Claude instances", () => {
+    assert.isTrue(failoverManagesProvider(provider(), settings));
+    assert.isTrue(failoverManagesProvider(provider(b), settings));
+    assert.isFalse(failoverManagesProvider(undefined, settings));
+    assert.isFalse(failoverManagesProvider(provider(), { ...settings, enabled: false }));
+    assert.isFalse(
+      failoverManagesProvider(provider(), { ...settings, subscriptionOnlyInstances: [] }),
+    );
+    assert.isFalse(
+      failoverManagesProvider(
+        { ...provider(), driver: ProviderDriverKind.make("cursor") },
+        settings,
+      ),
+    );
+  });
   it("S1/S15 chooses Claude without a Captain or any model call", () => {
     const d = decide();
     assert.equal(d.phase, "switch");
