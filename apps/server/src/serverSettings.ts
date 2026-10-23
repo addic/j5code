@@ -445,6 +445,8 @@ function fallbackTextGenerationProvider(settings: ServerSettings): ServerSetting
 }
 
 const ATOMIC_SETTINGS_KEYS: ReadonlySet<string> = new Set([
+  // J5: failover fields are required together, including values equal to defaults.
+  "usageLimitFailover",
   "backgroundActivity",
   "automaticGitFetchInterval",
   "providerHealthRefreshInterval",
